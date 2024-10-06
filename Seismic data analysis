@@ -1,0 +1,117 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import logging
+
+def sta_lta(data, sta_length, lta_length):
+    cumsum = np.cumsum(data**2)
+    sta = (cumsum[sta_length:] - cumsum[:-sta_length]) / sta_length
+    lta = (cumsum[lta_length:] - cumsum[:-lta_length]) / lta_length
+    
+    sta = np.pad(sta, (sta_length // 2, (sta_length - 1) // 2), mode='edge')
+    lta = np.pad(lta, (lta_length // 2, (lta_length - 1) // 2), mode='edge')
+    
+    lta = np.where(lta == 0, np.finfo(float).eps, lta)
+    
+    return sta / lta
+
+def plot_seismic_data(df, sample_column, sta_lta_ratio, threshold1, threshold2):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+
+    # Plot the original seismic data
+    ax1.plot(df['Time'], df[sample_column], label='Seismic Data')
+    ax1.set_ylabel('Amplitude')
+    ax1.set_title('Original Seismic Data')
+    ax1.legend()
+    ax1.grid(True)
+
+    # Trim the Time column to match the length of the STA/LTA ratio
+    time_trimmed = df['Time'][:len(sta_lta_ratio)]
+
+    # Plot the STA/LTA ratio
+    ax2.plot(time_trimmed, sta_lta_ratio, label='STA/LTA Ratio', color='blue')
+    ax2.axhline(y=threshold1, color='red', linestyle='--', label='Upper Threshold')
+    ax2.axhline(y=threshold2, color='green', linestyle='--', label='Lower Threshold')
+    ax2.set_ylabel('STA/LTA Ratio')
+    ax2.set_title('STA/LTA Ratio with Detected Events')
+    ax2.legend()
+    ax2.grid(True)
+
+    plt.xlabel('Time')
+    plt.tight_layout()
+    plt.show()
+
+def run_analysis(input_file, sta=10, lta=50, threshold1=1.025, threshold2=0.975):
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"Reading data from {input_file}")
+        df = pd.read_csv(input_file)
+        
+        logger.info(f"Columns in the DataFrame: {df.columns}")
+        logger.info(f"Shape of the DataFrame: {df.shape}")
+        
+        if 'Time' not in df.columns:
+            raise ValueError("CSV must contain a 'Time' column")
+        
+        sample_columns = [col for col in df.columns if 'sample' in col.lower()]
+        if not sample_columns:
+            raise ValueError("CSV must contain a column with 'sample' in its name")
+        sample_column = sample_columns[0]
+        logger.info(f"Using '{sample_column}' as the sample data column")
+        
+        df['Time'] = pd.to_datetime(df['Time'])
+        data = df[sample_column].values
+
+        logger.info(f"Shape of data array: {data.shape}")
+        logger.info(f"Data statistics: \n{pd.Series(data).describe()}")
+        logger.info(f"Number of NaN values in data: {np.isnan(data).sum()}")
+        
+        logger.info("Calculating STA/LTA ratio")
+        sta_lta_ratio = sta_lta(data, sta, lta)
+        
+        # Trim the DataFrame to match the length of the STA/LTA ratio if necessary
+        if len(sta_lta_ratio) < len(df):
+            df = df.iloc[:len(sta_lta_ratio)]
+        
+        logger.info(f"Shape of STA/LTA ratio: {sta_lta_ratio.shape}")
+        logger.info(f"STA/LTA ratio statistics: \n{pd.Series(sta_lta_ratio).describe()}")
+        logger.info(f"Number of NaN values in STA/LTA ratio: {np.isnan(sta_lta_ratio).sum()}")
+        logger.info(f"Number of inf values in STA/LTA ratio: {np.isinf(sta_lta_ratio).sum()}")
+        
+        # Replace NaN and inf values with a value outside the threshold range
+        sta_lta_ratio = np.nan_to_num(sta_lta_ratio, nan=0.0, posinf=0.0, neginf=0.0)
+
+        logger.info("Detecting events")
+        event_mask = (sta_lta_ratio > threshold2) & (sta_lta_ratio < threshold1)
+        logger.info(f"Event mask shape: {event_mask.shape}")
+        logger.info(f"Number of True values in event mask: {np.sum(event_mask)}")
+        
+        df['Event_Detected'] = event_mask
+
+        # Add new column `detected_thresh` for events where the STA/LTA ratio exceeds threshold1 or threshold2
+        df['detected_thresh'] = (sta_lta_ratio > threshold1) | (sta_lta_ratio < threshold2)
+
+        detected_events = df[df['Event_Detected']]
+        logger.info(f"Detected {len(detected_events)} events")
+
+        output_file = 'detected_events.csv'
+        detected_events['Time'].to_csv(output_file, index=False)
+        logger.info(f"Saved detected events to {output_file}")
+
+        # Save the updated DataFrame with the new `detected_thresh` column to a CSV file
+        updated_output_file = 'updated_seismic_data.csv'
+        df.to_csv(updated_output_file, index=False)
+        logger.info(f"Saved updated DataFrame with 'detected_thresh' column to {updated_output_file}")
+
+        logger.info("Plotting results")
+        plot_seismic_data(df, sample_column, sta_lta_ratio, threshold1, threshold2)
+
+    except Exception as e:
+        logger.error(f"An error occurred: {str(e)}")
+        raise
+
+# Example usage
+input_file = r"C:\Users\LENOVO\Downloads\xb.elyse.68.shv.mqs2019drgb.1.csv"
+run_analysis(input_file)
